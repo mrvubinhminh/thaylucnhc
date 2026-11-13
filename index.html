@@ -520,6 +520,7 @@ function doPost(e) {
   const TOOLS = [
     ['cursor', 'V', 'Chuột – thao tác với trang (Esc)', '<path d="M5 3l14 8-6 1.5L10 19z"/>'],
     ['pen', 'P', 'Bút (P)', '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/>'],
+    ['nib', 'B', 'Bút mài (B) – nét thanh nét đậm như bút máy', '<path d="M12 2l4 7-4 9-4-9z"/><path d="M12 9v4"/><path d="M4 22c3-1 5-3 8-4" stroke-width="2.6"/>'],
     ['hl', 'H', 'Bút dạ quang (H)', '<path d="M9 15l-4 4h6l1-1"/><path d="M9 15l7-11 4 3-7 11z"/>'],
     ['laser', 'K', 'Bút laser – tự mờ (K)', '<circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>'],
     ['line', 'L', 'Đường thẳng (L) – giữ Shift để bắt góc', '<path d="M5 19L19 5"/>'],
@@ -905,6 +906,44 @@ function doPost(e) {
     }
     const l = pts[pts.length - 1]; c.lineTo(l[0], l[1]); c.stroke();
   }
+  // Bút mài: ngòi dẹt nghiêng ~40° → nét ngang/xiên lên đậm, nét xiên xuống mảnh; có lực nhấn bút (nếu có)
+  const NIB_ANG = -0.7;
+  function strokeNib(c, o) {
+    let P = o.pts.map((v, i) => [v[0], v[1], o.pr && o.pr[i] != null ? o.pr[i] : 0.5]);
+    // bỏ điểm quá sát, làm mượt 2 lần (Chaikin)
+    P = P.filter((v, i) => i === 0 || i === P.length - 1 || Math.hypot(v[0] - P[i - 1][0], v[1] - P[i - 1][1]) > 0.8);
+    for (let k = 0; k < 2 && P.length > 2; k++) {
+      const Q = [P[0]];
+      for (let i = 0; i < P.length - 1; i++) { const a = P[i], b = P[i + 1]; Q.push([a[0] * .75 + b[0] * .25, a[1] * .75 + b[1] * .25, a[2] * .75 + b[2] * .25], [a[0] * .25 + b[0] * .75, a[1] * .25 + b[1] * .75, a[2] * .25 + b[2] * .75]); }
+      Q.push(P[P.length - 1]); P = Q;
+    }
+    const base = (o.w || 4) * 2.0, n = P.length;
+    c.fillStyle = o.color;
+    if (n < 2) { c.beginPath(); c.arc(P[0][0], P[0][1], base * 0.35, 0, 7); c.fill(); return; }
+    let W = P.map((v, i) => {
+      const a = P[Math.max(0, i - 2)], b = P[Math.min(n - 1, i + 2)];
+      const th = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      return base * (0.2 + 0.8 * Math.abs(Math.sin(th - NIB_ANG))) * (0.55 + 0.9 * Math.min(1, v[2]));
+    });
+    for (let k = 0; k < 2; k++) W = W.map((w, i) => (W[Math.max(0, i - 1)] + 2 * w + W[Math.min(n - 1, i + 1)]) / 4);
+    const tp = Math.min(6, Math.floor(n / 4));   // vuốt nhọn nhẹ ở đầu / cuối nét
+    for (let i = 0; i < tp; i++) { const f = 0.45 + 0.55 * (i + 1) / (tp + 1); W[i] *= f; W[n - 1 - i] *= f; }
+    const L = [], R = [];
+    for (let i = 0; i < n; i++) {
+      const a = P[Math.max(0, i - 1)], b = P[Math.min(n - 1, i + 1)];
+      let dx = b[0] - a[0], dy = b[1] - a[1]; const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+      const h = W[i] / 2;
+      L.push([P[i][0] - dy * h, P[i][1] + dx * h]); R.push([P[i][0] + dy * h, P[i][1] - dx * h]);
+    }
+    const side = (arr, first) => {
+      if (first) c.moveTo(arr[0][0], arr[0][1]); else c.lineTo(arr[0][0], arr[0][1]);
+      for (let i = 1; i < arr.length - 1; i++) c.quadraticCurveTo(arr[i][0], arr[i][1], (arr[i][0] + arr[i + 1][0]) / 2, (arr[i][1] + arr[i + 1][1]) / 2);
+      c.lineTo(arr[arr.length - 1][0], arr[arr.length - 1][1]);
+    };
+    c.beginPath(); side(L, true); side(R.reverse(), false); c.closePath(); c.fill();
+    c.beginPath(); c.arc(P[0][0], P[0][1], W[0] / 2, 0, 7); c.fill();
+    c.beginPath(); c.arc(P[n - 1][0], P[n - 1][1], W[n - 1] / 2, 0, 7); c.fill();
+  }
   function drawObj(c, o) {
     c.save();
     c.lineCap = 'round'; c.lineJoin = 'round';
@@ -912,7 +951,8 @@ function doPost(e) {
     c.strokeStyle = o.color; c.lineWidth = o.w;
     if (o.dash) dashFor(c, o);
     if (o.t === 'hl') { c.globalAlpha = 0.35; c.lineWidth = o.w * 4; c.lineCap = 'butt'; }
-    if (o.t === 'pen' || o.t === 'hl') strokePath(c, o.pts);
+    if (o.t === 'pen' && o.nib) strokeNib(c, o);
+    else if (o.t === 'pen' || o.t === 'hl') strokePath(c, o.pts);
     else if (o.t === 'line' || o.t === 'arrow') {
       const [x1, y1, x2, y2] = o.p;
       c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke();
@@ -2176,7 +2216,8 @@ function doPost(e) {
     if (GEO_TOOLS.includes(t) && geoDown(e, x, y)) return;
     if (t === 'tex') { openTex(x, y); return; }
     if (t === 'laser') { laser = [[x, y, performance.now()]]; if (!laserRaf) laserRaf = requestAnimationFrame(laserLoop); drawing = { t: 'laser' }; return; }
-    if (t === 'pen' || t === 'hl') drawing = { t, color: st.color, w: st.width, pts: [[x, y]] };
+    if (t === 'nib') drawing = { t: 'pen', nib: 1, color: st.color, w: st.width, pts: [[x, y]], pr: [e.pointerType === 'mouse' ? 0.5 : (e.pressure || 0.5)] };
+    else if (t === 'pen' || t === 'hl') drawing = { t, color: st.color, w: st.width, pts: [[x, y]] };
     else if (t === 'line' || t === 'arrow') { const s = snap(x, y, e); drawing = { t, color: st.color, w: st.width, p: [s.x, s.y, s.x, s.y] }; }
     else drawing = { t, color: st.color, w: st.width, p: [x, y, x, y] };
     renderLive();
@@ -2229,7 +2270,7 @@ function doPost(e) {
     if (drawing.t === 'laser') { laser.push([x, y, performance.now()]); return; }
     if (drawing.pts) {
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      for (const ev of evs) drawing.pts.push([ev.clientX, ev.clientY]);
+      for (const ev of evs) { drawing.pts.push([ev.clientX, ev.clientY]); if (drawing.pr) drawing.pr.push(ev.pointerType === 'mouse' ? 0.5 : (ev.pressure || 0.5)); }
     } else {
       let [x2, y2] = [x, y];
       if (e.shiftKey) {
@@ -2813,7 +2854,7 @@ function doPost(e) {
 
     // ---- công cụ vẽ (đã nhóm)
     if (!st.board) { const c = btn(tdef('cursor')[2], tdef('cursor')[3], () => setTool('cursor')); c.dataset.tool = 'cursor'; full(c); }
-    toolGroup('pen', 'Bút', ['pen', 'hl', 'laser']);
+    toolGroup('pen', 'Bút', ['pen', 'nib', 'hl', 'laser']);
     toolGroup('shape', 'Hình', ['line', 'arrow', 'rect', 'ellipse']);
     { const t = btn(tdef('tex')[2], tdef('tex')[3], () => setTool('tex')); t.dataset.tool = 'tex'; full(t); }
     toolGroup('edit', 'Tẩy · di chuyển', ['eraser', 'move']);
@@ -3171,6 +3212,7 @@ function doPost(e) {
   const NEXT_KEYS = new Set(['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter', 'n', 'N']);
   const PREV_KEYS = new Set(['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace', 'p', 'P']);
   function onKey(e) {
+    if ((e.key === 'o' || e.key === 'O') && !e.ctrlKey && !e.metaKey && !e.altKey && !isTyping(e)) { try { if (window.parent !== window && window.parent.qwKey && window.parent.qwKey()) { e.preventDefault(); e.stopPropagation(); return; } } catch (err) {} }
     if (!st.visible || dlg.classList.contains('open')) return;
     if (!isTyping(e) && selKey(e)) { e.preventDefault(); e.stopPropagation(); return; }
     // chế độ theo slide: phím chuyển slide vẫn tới trang chiếu, đồng thời đổi trang nét vẽ
@@ -4530,15 +4572,15 @@ body.qw-half #stageWrap{right:var(--qw,50vw)!important}
 #qwBar button.on{background:#334155}
 #qwShield{display:none;position:fixed;inset:0;z-index:45;cursor:col-resize}
 </style>
-<button id="qwTab" title="Trang web nhanh (Alt+Q: thu gọn / mở lại)"><i></i><b>⋮</b></button>
+<button id="qwTab" title="Trang web nhanh — phím O (hoặc Alt+Q): thu gọn / mở lại"><i></i><b>⋮</b></button>
 <div id="qwMenu" role="menu">
   <h5>Trang web nhanh <span id="qwAddBtn" title="Thêm trang">＋</span></h5>
   <div id="qwList"></div>
   <div class="qwAdd" id="qwAdd"><input id="qwAddIn" placeholder="https://… (Enter)"><button id="qwAddOk">Thêm</button></div>
-  <div class="qwHint">◧ nửa phải · ⛶ toàn màn hình · Alt+Q thu gọn / mở lại</div>
+  <div class="qwHint">◧ nửa phải · ⛶ toàn màn hình · phím <b>O</b> thu gọn / mở lại</div>
 </div>
 <div id="qwPanel"><div id="qwGrip" title="Kéo để đổi độ rộng"></div>
-  <div id="qwBar"><span id="qwName"></span><button id="qwHalf" title="Nửa màn hình bên phải">◧</button><button id="qwFull" title="Toàn màn hình">⛶</button><button id="qwReload" title="Tải lại">↻</button><button id="qwExt" title="Mở ở thẻ trình duyệt mới">↗</button><button id="qwMin" title="Thu gọn (Alt+Q) — mở lại tức thì từ mép phải">—</button><button id="qwClose" title="Đóng trang">✕</button></div>
+  <div id="qwBar"><span id="qwName"></span><button id="qwHalf" title="Nửa màn hình bên phải">◧</button><button id="qwFull" title="Toàn màn hình">⛶</button><button id="qwReload" title="Tải lại">↻</button><button id="qwExt" title="Mở ở thẻ trình duyệt mới">↗</button><button id="qwMin" title="Thu gọn (phím O) — bấm O hoặc mép phải để mở lại">—</button><button id="qwClose" title="Đóng trang">✕</button></div>
 </div>
 <div id="qwShield"></div>
 <script>
@@ -4634,6 +4676,12 @@ body.qw-half #stageWrap{right:var(--qw,50vw)!important}
   addEventListener('keydown', (e) => { if (e.altKey && (e.key === 'q' || e.key === 'Q' || e.code === 'KeyQ')) { e.preventDefault(); if (document.body.classList.contains('hidebar')) toggleHide(); } }, true);
   // ra khỏi toàn màn hình → tự thu gọn (trang vẫn giữ nguyên, vào lại là thấy)
   new MutationObserver(layout).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  // phím O: thu gọn / mở lại trang web (chỉ khi toàn màn hình hoặc ẩn thanh trên; ngoài ra O vẫn là công cụ Elip)
+  window.qwKey = () => { if (!document.body.classList.contains('hidebar')) return false; if (cur) { toggleHide(); closeMenu(); } else menu.classList.contains('open') ? closeMenu() : openMenu(); return true; };
+  addEventListener('keydown', (e) => {
+    const t = e.target; if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if ((e.key === 'o' || e.key === 'O') && !e.ctrlKey && !e.metaKey && !e.altKey && window.qwKey()) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
   window.qwToggle = toggleHide;
   render();
 })();
